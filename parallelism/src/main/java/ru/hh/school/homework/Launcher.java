@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -43,15 +42,17 @@ public class Launcher {
     // test our naive methods:
     //  testCount();
     //  testSearch();
-    private static List<Path> listJavaFile;
-    private static final Path PATH = Path.of("C:\\Users\\Artem\\IdeaProjects\\hh-school1\\parallelism\\src\\main\\java");
+
+    private static final Path PATH = Path.of("C:\\Users\\Artem\\IdeaProjects\\hh-school1");
     private static final String EXTENSION = ".java";
+    private static final Map<String, Long> cacheQuery = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws IOException {
-        ConcurrentMap<String, Map<String, Long>> listFolderAndWord = new ConcurrentHashMap<>();
+        ExecutorService executorService = Executors.newCachedThreadPool();
+        ConcurrentMap<String, ConcurrentMap<String, Long>> listFolderAndWord = new ConcurrentHashMap<>();
         ConcurrentMap<String, ArrayList<String>> result = new ConcurrentHashMap<>();
 
-        getListJavaFile(PATH, EXTENSION);
+        List<Path> listJavaFile = getListJavaFile(PATH, EXTENSION);
 
         listJavaFile.parallelStream().forEach(file -> {
             String parent = file.getParent().toString();
@@ -59,7 +60,6 @@ public class Launcher {
             mergeCountWordInFolder(listFolderAndWord, file, folderName);
         });
 
-        ExecutorService executorService = Executors.newCachedThreadPool();
         List<Callable<Object>> tasks = new ArrayList<>();
         try {
             listFolderAndWord.forEach((folder, mapOfWord) -> mapOfWord.forEach((word, count) -> tasks.add(() -> {
@@ -79,21 +79,24 @@ public class Launcher {
             executorService.shutdown();
         }
     }
-    private static void mergeCountWordInFolder(Map<String, Map<String, Long>> listFolderAndWord, Path file, String folderName) {
-        listFolderAndWord.merge(folderName, naiveCount(file), (map1, map2) -> {
-            map2.forEach((k, v) -> map1.merge(k, v, Long::sum));
-            return map1.entrySet()
+
+    private static void mergeCountWordInFolder
+            (ConcurrentMap<String, ConcurrentMap<String, Long>> listFolderAndWord, Path file, String folderName) {
+        listFolderAndWord.merge(folderName, naiveCount(file), (listFolderAndWordOld, listFolderAndWordnew) -> {
+            listFolderAndWordnew.forEach((folder, word) -> listFolderAndWordOld.merge(folder, word, Long::sum));
+            return listFolderAndWordOld.entrySet()
                     .stream()
                     .sorted(Map.Entry.comparingByValue(reverseOrder()))
                     .limit(10)
-                    .collect(LinkedHashMap::new,
-                            (map, item) -> map.put(item.getKey(), item.getValue()),
+                    .collect(ConcurrentHashMap::new,
+                            (mapOfWordInFolder, wordInFolder) -> mapOfWordInFolder.put(wordInFolder.getKey(), wordInFolder.getValue()),
                             Map::putAll);
         });
     }
 
 
-    private static Map<String, Long> naiveCount(Path path) {
+    private static ConcurrentMap<String, Long> naiveCount(Path path) {
+
         try {
             return Files.lines(path)
                     .flatMap(line -> Stream.of(line.split("[^a-zA-Z0-9]")))
@@ -102,8 +105,8 @@ public class Launcher {
                     .entrySet()
                     .stream().sorted(Map.Entry.comparingByValue(reverseOrder()))
                     .limit(10)
-                    .collect(LinkedHashMap::new,                           // Supplier LinkedHashMap to keep the order
-                            (map, item) -> map.put(item.getKey(), item.getValue()),  // Accumulator
+                    .collect(ConcurrentHashMap::new,
+                            (mapOfWord, wordInMap) -> mapOfWord.put(wordInMap.getKey(), wordInMap.getValue()),
                             Map::putAll);
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -111,6 +114,9 @@ public class Launcher {
     }
 
     private static long naiveSearch(String query) throws IOException {
+        if (cacheQuery.containsKey(query)) {
+            return cacheQuery.get(query);
+        }
         Document document = Jsoup //
                 .connect("https://www.google.com/search?q=" + query) //
                 .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.116 Safari/537.36") //
@@ -119,10 +125,12 @@ public class Launcher {
         Element divResultStats = document.select("#result-stats").first();
         String text = divResultStats.text();
         String resultsPart = text.substring(0, text.indexOf('('));
-        return Long.parseLong(resultsPart.replaceAll("[^0-9]", ""));
+        long frequencyOfQuery = Long.parseLong(resultsPart.replaceAll("[^0-9]", ""));
+        cacheQuery.put(query, frequencyOfQuery);
+        return frequencyOfQuery;
     }
 
-    public static void getListJavaFile(Path path, String fileExtension)
+    public static List<Path> getListJavaFile(Path path, String fileExtension)
             throws IOException {
 
         if (!Files.isDirectory(path)) {
@@ -130,9 +138,9 @@ public class Launcher {
         }
 
         try (Stream<Path> walk = Files.walk(path)) {
-            listJavaFile = walk
+            return walk
                     .filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().endsWith(fileExtension))
+                    .filter(file -> file.getFileName().toString().endsWith(fileExtension))
                     .collect(Collectors.toList());
         }
     }
