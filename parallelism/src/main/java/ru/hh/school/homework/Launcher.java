@@ -7,7 +7,10 @@ import org.jsoup.nodes.Element;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.stream.Stream;
 
@@ -17,35 +20,31 @@ import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.*;
 
 public class Launcher {
-    private static final Path PATH = Path.of("C:\\Users\\Artem\\IdeaProjects\\hh-school1\\parallelism\\src\\main\\java\\ru\\hh\\school\\parallelism\\sequential");
+    private static final Path PATH = Path.of("C:\\Users\\Artem\\IdeaProjects\\hh-school1\\parallelism\\src\\main\\java\\ru\\hh\\school\\parallelism");
     private static final String EXTENSION = ".java";
     private static final Map<String, Long> cacheOfQuery = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws IOException, InterruptedException {
         ExecutorService fileProcessService = Executors.newCachedThreadPool();
         ExecutorService searchProcessService = Executors.newCachedThreadPool();
-        ConcurrentMap<String, ArrayList<String>> result = new ConcurrentHashMap<>();
 
         List<Path> directories = Files.walk(PATH)
                 .filter(Files::isDirectory)
                 .toList();
 
-        CompletableFuture[] futures = directories.stream().map(directory -> CompletableFuture.supplyAsync(() -> getTopTenWordInDirectory(directory), fileProcessService)
-                .thenAccept(map -> {
-                    Set<String> words = map.keySet();
-                    CompletableFuture[] wordFutures = words.stream().map(word -> CompletableFuture.supplyAsync(() -> naiveSearch(word), searchProcessService)
-                            .thenAccept(searchResult -> result.computeIfAbsent("\n" + "Папка: " + directory, value -> new ArrayList<>()).add("\n" + " Слово для поиска:" + word + "," + " КолВо результатов в Google:" + searchResult))
-                    ).toArray(CompletableFuture[]::new);
-                    CompletableFuture.allOf(wordFutures).join();
-                })).toArray(CompletableFuture[]::new);
+        directories.forEach(directory -> CompletableFuture.supplyAsync(() -> getTopTenWordInDirectory(directory), fileProcessService).thenAccept(map -> {
+            Set<String> words = map.keySet();
+            words.forEach(word -> CompletableFuture.supplyAsync(() -> naiveSearch(word), searchProcessService)
+                    .thenAccept(searchResult -> {
+                                System.out.println("Папка:" + directory + " Слово для поиска:" + word + "," + " КолВо результатов в Google:" + searchResult);
+                            }
+                    ));
+        }));
 
-        CompletableFuture.allOf(futures).join();
-
-
+        fileProcessService.awaitTermination(60, TimeUnit.MILLISECONDS);
+        searchProcessService.awaitTermination(60, TimeUnit.MILLISECONDS);
         fileProcessService.shutdown();
         searchProcessService.shutdown();
-
-        System.out.println(result);
     }
 
     private static Map<String, Long> getTopTenWordInDirectory(Path directory) {
